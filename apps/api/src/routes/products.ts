@@ -1,11 +1,20 @@
-import { Router } from "express"
-import { z } from "zod"
-import { prisma } from "../lib/prisma"
-import { requireAuth, type AuthedRequest } from "../middleware/auth"
-import { requireAnyRole } from "../middleware/rbac"
-import { writeAudit } from "../lib/audit";
+import {Router} from "express"
+import {z} from "zod"
+import {prisma} from "../lib/prisma"
+import {type AuthedRequest, requireAuth} from "../middleware/auth"
+import {requireAnyRole} from "../middleware/rbac"
 
 export const productsRouter = Router()
+
+const productSelect = {
+    id: true,
+    sku: true,
+    title: true,
+    priceCents: true,
+    isActive: true,
+    createdAt: true,
+    updatedAt: true,
+} as const
 
 // GET /products?active=true|false
 productsRouter.get("/", requireAuth, async (req: AuthedRequest, res) => {
@@ -31,19 +40,31 @@ productsRouter.get("/", requireAuth, async (req: AuthedRequest, res) => {
             ...(isActive === undefined ? {} : { isActive }),
         },
         orderBy: { createdAt: "desc" },
-        select: {
-            id: true,
-            sku: true,
-            title: true,
-            priceCents: true,
-            isActive: true,
-            createdAt: true,
-            updatedAt: true,
-        },
+        select: productSelect
     })
 
-    res.json({ products })
+    return res.json({ products })
 })
+
+productsRouter.get(
+    "/:id",
+    requireAuth,
+    async (req: AuthedRequest, res) => {
+        const tenantId = req.auth!.tid
+        const productId = req.params.id
+
+        const product = await prisma.product.findFirst({
+            where: { id: productId, tenantId },
+            select: productSelect
+        })
+
+        if(!product) {
+            return res.status(404).json({ error: "Product not found" })
+        }
+
+        return res.json({ product })
+    }
+)
 
 const createSchema = z.object({
     sku: z.string().trim().min(1).max(64),
@@ -64,37 +85,36 @@ productsRouter.post(
         }
 
         try {
-            const created = await prisma.product.create({
-                data: {
-                    tenantId,
-                    sku: parsed.data.sku,
-                    title: parsed.data.title,
-                    priceCents: parsed.data.priceCents,
-                    isActive: parsed.data.isActive ?? true,
-                },
-                select: {
-                    id: true,
-                    sku: true,
-                    title: true,
-                    priceCents: true,
-                    isActive: true,
-                    createdAt: true,
-                    updatedAt: true,
-                },
+            const created = await prisma.$transaction(async (tx) => {
+                const created = await tx.product.create({
+                    data: {
+                        tenantId,
+                        sku: parsed.data.sku,
+                        title: parsed.data.title,
+                        priceCents: parsed.data.priceCents,
+                        isActive: parsed.data.isActive ?? true,
+                    },
+                    select: productSelect
+                })
+
+                await tx.auditLog.create({
+                    data: {
+                        tenantId,
+                        userId: req.auth!.sub,
+                        action: "PRODUCT_CREATED",
+                        requestId: req.requestId ?? null,
+                        meta: {
+                            productId: created.id,
+                            sku: created.sku,
+                            title: created.title,
+                            priceCents: created.priceCents,
+                        },
+                    },
+                })
+
+                return created
             })
 
-            await writeAudit({
-                tenantId,
-                userId: req.auth!.sub,
-                action: "PRODUCT_CREATED",
-                requestId: req.requestId ?? null,
-                meta: {
-                    productId: created.id,
-                    sku: created.sku,
-                    title: created.title,
-                    priceCents: created.priceCents,
-                },
-            })
 
             return res.status(201).json({ product: created })
         } catch (e: any) {
@@ -131,42 +151,37 @@ productsRouter.patch(
         }
 
         // Tenant-scope update: updateMany enforces tenantId in WHERE
-        const updated = await prisma.product.updateMany({
-            where: { id: productId, tenantId },
-            data: parsed.data,
+        const product = await prisma.$transaction(async (tx) => {
+            const updated = await tx.product.updateMany({
+                where: { id: productId, tenantId },
+                data: parsed.data,
+            })
+
+            if (updated.count === 0) return null
+
+            await tx.auditLog.create({
+                data: {
+                    tenantId,
+                    userId: req.auth!.sub,
+                    action: "PRODUCT_UPDATED",
+                    requestId: req.requestId ?? null,
+                    meta: {
+                        productId,
+                        patch: parsed.data,
+                        route: req.originalUrl,
+                        method: req.method,
+                        ip: req.ip,
+                    },
+                }
+            })
+
+            return tx.product.findFirst({
+                where: { id: productId, tenantId },
+                select: productSelect,
+            })
         })
 
-        if (updated.count === 0) {
-            return res.status(404).json({ error: "Product not found" })
-        }
-
-
-        await writeAudit({
-            tenantId,
-            userId: req.auth!.sub,
-            action: "PRODUCT_UPDATED",
-            requestId: req.requestId ?? null,
-            meta: {
-                productId,
-                patch: parsed.data,
-                route: req.originalUrl,
-                method: req.method,
-                ip: req.ip,
-            },
-        })
-
-        const product = await prisma.product.findFirst({
-            where: { id: productId, tenantId },
-            select: {
-                id: true,
-                sku: true,
-                title: true,
-                priceCents: true,
-                isActive: true,
-                createdAt: true,
-                updatedAt: true,
-            },
-        })
+        if (!product) return res.status(404).json({ error: "Product not found" })
 
         return res.json({ product })
     }
@@ -181,57 +196,36 @@ productsRouter.delete(
         const productId = req.params.id
 
         // Tenant-scope delete: deleteMany enforces tenantId in WHERE
-        const deleted = await prisma.product.deleteMany({
-            where: { id: productId, tenantId }
-        })
+        const deleted = await prisma.$transaction(async (tx) => {
+            const deleted = await tx.product.deleteMany({
+                where: { id: productId, tenantId },
+            })
 
+            if (deleted.count === 0) return deleted
+
+            await tx.auditLog.create({
+                data: {
+                    tenantId,
+                    userId: req.auth!.sub,
+                    action: "PRODUCT_DELETED",
+                    requestId: req.requestId ?? null,
+                    meta: {
+                        productId,
+                        route: req.originalUrl,
+                        method: req.method,
+                        ip: req.ip,
+                    }
+                }
+            })
+
+            return deleted
+        })
 
         if (deleted.count === 0) {
             return res.status(404).json({ error: "Product not found" })
         }
 
-        await writeAudit({
-            tenantId,
-            userId: req.auth!.sub,
-            action: "PRODUCT_DELETED",
-            requestId: req.requestId ?? null,
-            meta: {
-                productId,
-                route: req.originalUrl,
-                method: req.method,
-                ip: req.ip,
-            },
-        })
-
         return res.sendStatus(204)
-    }
-)
-
-productsRouter.get(
-    "/:id",
-    requireAuth,
-    async (req: AuthedRequest, res) => {
-        const tenantId = req.auth!.tid
-        const productId = req.params.id
-
-        const product = await prisma.product.findFirst({
-            where: { id: productId, tenantId },
-            select: {
-                id: true,
-                sku: true,
-                title: true,
-                priceCents: true,
-                isActive: true,
-                createdAt: true,
-                updatedAt: true,
-            },
-        })
-
-        if(!product) {
-            return res.status(404).json({ error: "Product not found" })
-        }
-
-        return res.json({ product })
     }
 )
 

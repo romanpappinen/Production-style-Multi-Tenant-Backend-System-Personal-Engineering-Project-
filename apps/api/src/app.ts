@@ -4,8 +4,9 @@ import {requestContext} from "./middleware/requestContext";
 import cors from "cors"
 import helmet from "helmet"
 import { authRouter } from "./routes/auth"
-import { meRouter } from "./routes/me";
+import { meRouter } from "./routes/me"
 import { productsRouter } from "./routes/products"
+import { ordersRouter } from "./routes/orders"
 import { env } from "./lib/env"
 import { notFound, errorHandler } from "./middleware/error"
 
@@ -17,12 +18,14 @@ export function createApp() {
     app.use(cors({ origin: env.corsOrigin, credentials: true }))
     app.use(express.json({ limit: "1mb" }))
     app.use(cookieParser())
+    app.set("trust proxy", 1)
 
     app.get("/health", (_req, res) => res.json({ ok: true }))
 
     app.use("/auth", authRouter)
     app.use("/me", meRouter)
     app.use("/products", productsRouter)
+    app.use("/orders", ordersRouter)
 
     app.use(notFound)
     app.use(errorHandler)
