@@ -4,7 +4,8 @@ import { env } from "./env"
 export type AccessTokenPayload = {
     sub: string // userId
     tid: string // tenantId
-    role: "admin" | "manager" | "user"
+    role: "admin" | "manager" | "user",
+    gr: "none" | "superadmin"
 }
 
 export function signAccessToken(payload: AccessTokenPayload): string {

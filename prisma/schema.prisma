@@ -30,6 +30,11 @@ enum AuditAction {
   ORDER_CANCELLED
 }
 
+enum GlobalRole {
+  none
+  superadmin
+}
+
 // ------------------------------------------------------------
 // Core: multi-tenant
 // ------------------------------------------------------------
@@ -54,6 +59,7 @@ model User {
   email         String   @unique
   passwordHash  String
   name          String?
+  globalRole   GlobalRole @default(none)
   createdAt     DateTime @default(now())
   createdOrders Order[]  @relation("OrderCreatedBy")
   updatedAt     DateTime @updatedAt

@@ -8,6 +8,7 @@ declare global {
                 sub: string
                 tid: string
                 role: "admin" | "manager" | "user"
+                gr: "none" | "superadmin"
             }
         }
     }

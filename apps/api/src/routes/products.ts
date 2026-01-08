@@ -2,7 +2,7 @@ import {Router} from "express"
 import {z} from "zod"
 import {prisma} from "../lib/prisma"
 import {type AuthedRequest, requireAuth} from "../middleware/auth"
-import {requireAnyRole} from "../middleware/rbac"
+import { requireAnyRole } from "../middleware/rbac"
 
 export const productsRouter = Router()
 
@@ -17,7 +17,10 @@ const productSelect = {
 } as const
 
 // GET /products?active=true|false
-productsRouter.get("/", requireAuth, async (req: AuthedRequest, res) => {
+productsRouter.get(
+    "/",
+    requireAuth,
+    async (req: AuthedRequest, res) => {
     const tenantId = req.auth!.tid
 
     const activeParam = req.query.active
