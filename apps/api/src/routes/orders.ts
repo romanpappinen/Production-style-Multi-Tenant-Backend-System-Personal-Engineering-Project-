@@ -3,16 +3,29 @@ import {z} from "zod"
 import {prisma} from "../lib/prisma"
 import {type AuthedRequest, requireAuth} from "../middleware/auth"
 import {requireAnyRole} from "../middleware/rbac"
+import parsePagination from "../lib/pagination";
+
+class HttpError extends Error {
+    status: number
+    constructor(status: number, message: string) {
+        super(message)
+        this.status = status
+    }
+}
 
 export const ordersRouter = Router()
 
-const orderSelect = {
+const orderListSelect = {
     id: true,
     status: true,
     createdByUserId: true,
     totalCents: true,
     createdAt: true,
-    updatedAt: true,
+    updatedAt: true
+} as const
+
+const orderDetailSelect = ({
+    ...orderListSelect,
     items: {
         select: {
             id: true,
@@ -27,8 +40,8 @@ const orderSelect = {
                 },
             },
         },
-    },
-} as const
+    }
+}) as const
 
 const productSelect = {
     id: true,
@@ -42,15 +55,27 @@ ordersRouter.get(
     requireAuth,
     async (req: AuthedRequest, res) => {
         const tenantId = req.auth!.tid
+        const { role, sub } = req.auth!
+        const where = role === "user"
+            ? { tenantId, createdByUserId: sub }
+            : { tenantId }
 
-        const orders = await prisma.order.findMany({
-            where: { tenantId },
-            orderBy: { createdAt: "desc" },
-            select: orderSelect
-        })
+        const { skip, take, page, limit } = parsePagination(req)
 
+        const [orders, total] = await Promise.all([
+            prisma.order.findMany({
+                where,
+                orderBy: { createdAt: "desc" },
+                skip,
+                take,
+                select: orderListSelect,
+            }),
+            prisma.order.count({
+                where,
+            }),
+        ])
 
-        return res.json({ orders })
+        return res.json({ orders, page, limit, total })
     }
 )
 
@@ -60,14 +85,18 @@ ordersRouter.get(
     async (req: AuthedRequest, res) => {
         const tenantId = req.auth!.tid
         const orderId = req.params.id
+        const { role, sub } = req.auth!
+        const where = role === "user"
+            ? { id: orderId, tenantId, createdByUserId: sub }
+            : { id: orderId, tenantId }
 
         const order = await prisma.order.findFirst({
-            where: { id: orderId, tenantId },
-            select: orderSelect
+            where,
+            select: orderDetailSelect
         })
 
         if(!order) {
-            return res.status(404).json({ error: "No order found" })
+            return res.status(404).json({ error: "Order not found" })
         }
         return res.json({ order })
     }
@@ -109,75 +138,83 @@ ordersRouter.post(
 
         const uniqueProductIds = [...new Set(items.map(i => i.productId))]
 
-        const products = await prisma.product.findMany({
-            where: { id: { in: uniqueProductIds }, tenantId, isActive: true },
-            select: productSelect,
-        })
+        try {
+            const order = await prisma.$transaction(async tx => {
 
-        if (products.length !== uniqueProductIds.length) {
-            return res.status(400).json({ error: "Some products not found or inactive" })
-        }
+                const products = await tx.product.findMany({
+                    where: { id: { in: uniqueProductIds }, tenantId, isActive: true },
+                    select: productSelect,
+                })
 
-        const productById = new Map(products.map(p => [p.id, p] as const))
-
-        let totalCents = 0
-        const orderItems: Array<{
-            productId: string
-            quantity: number
-            unitPriceCents: number
-            lineTotalCents: number
-        }> = []
-
-        for (const i of items) {
-            const product = productById.get(i.productId)
-            if (!product) {
-                return res.status(400).json({ error: `Product not found: ${i.productId}` })
-            }
-
-            const unitPriceCents = product.priceCents
-            const lineTotalCents = i.quantity * unitPriceCents
-
-            totalCents += lineTotalCents
-
-            orderItems.push({
-                productId: i.productId,
-                quantity: i.quantity,
-                unitPriceCents,
-                lineTotalCents,
-            })
-        }
-
-        const order = await prisma.$transaction(async tx => {
-            const order = await tx.order.create({
-                data: {
-                    tenantId,
-                    createdByUserId: userId,
-                    totalCents,
-                    items: {
-                        create: orderItems
-                    }
-                },
-                select: orderSelect
-            })
-
-            await tx.auditLog.create({
-                data: {
-                    tenantId,
-                    userId: req.auth!.sub,
-                    action: "ORDER_CREATED",
-                    requestId: req.requestId ?? null,
-                    meta: {
-                        orderId: order.id,
-                        totalCents: order.totalCents,
-                        orderItems: orderItems
-                    }
+                if (products.length !== uniqueProductIds.length) {
+                    throw new HttpError(400, "Some products not found or inactive")
                 }
+
+                const productById = new Map(products.map(p => [p.id, p] as const))
+
+                let totalCents = 0
+                const orderItems: Array<{
+                    productId: string
+                    quantity: number
+                    unitPriceCents: number
+                    lineTotalCents: number
+                }> = []
+
+                for (const i of items) {
+                    const product = productById.get(i.productId)
+                    if (!product) {
+                        throw new HttpError(400, `Product not found: ${i.productId}`)
+                    }
+
+                    const unitPriceCents = product.priceCents
+                    const lineTotalCents = i.quantity * unitPriceCents
+
+                    totalCents += lineTotalCents
+
+                    orderItems.push({
+                        productId: i.productId,
+                        quantity: i.quantity,
+                        unitPriceCents,
+                        lineTotalCents,
+                    })
+                }
+
+                const order = await tx.order.create({
+                    data: {
+                        tenantId,
+                        createdByUserId: userId,
+                        totalCents,
+                        items: {
+                            create: orderItems
+                        }
+                    },
+                    select: orderDetailSelect
+                })
+
+                await tx.auditLog.create({
+                    data: {
+                        tenantId,
+                        userId: req.auth!.sub,
+                        action: "ORDER_CREATED",
+                        requestId: req.requestId ?? null,
+                        meta: {
+                            orderId: order.id,
+                            totalCents: order.totalCents,
+                            orderItems: orderItems
+                        }
+                    }
+                })
+
+                return order
             })
 
-            return order
-        })
-
-        return res.status(201).json({ order })
+            return res.status(201).json({ order })
+        } catch (e: any) {
+            if (e?.status) {
+                return res.status(e.status).json({ error: e.message })
+            }
+            throw e
+        }
     }
 )
 
@@ -188,7 +225,6 @@ ordersRouter.patch(
     async (req: AuthedRequest, res) => {
         const tenantId = req.auth!.tid
         const orderId = req.params.id
-
 
         const order = await prisma.$transaction(async tx => {
             const updated = await tx.order.updateMany({
@@ -221,7 +257,7 @@ ordersRouter.patch(
 
             return tx.order.findFirst({
                 where: { id: orderId, tenantId },
-                select: orderSelect,
+                select: orderDetailSelect,
             })
         })
 

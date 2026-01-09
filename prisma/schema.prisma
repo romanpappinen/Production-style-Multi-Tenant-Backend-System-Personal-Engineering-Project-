@@ -17,6 +17,9 @@ enum TenantUserRole {
 }
 
 enum AuditAction {
+  INVITE_CREATED
+  INVITE_ACCEPTED
+
   USER_REGISTERED
   USER_LOGGED_IN
   USER_LOGGED_OUT
@@ -28,6 +31,9 @@ enum AuditAction {
 
   ORDER_CREATED
   ORDER_CANCELLED
+
+  TENANT_USER_ROLE_UPDATED
+  TENANT_USER_REMOVED
 }
 
 enum GlobalRole {
@@ -50,6 +56,7 @@ model Tenant {
   products  Product[]
   orders    Order[]
   auditLogs AuditLog[]
+  invites   InviteToken[]
 
   @@index([createdAt])
 }
@@ -193,4 +200,25 @@ model AuditLog {
   @@index([userId, createdAt])
   @@index([action, createdAt])
   @@index([requestId])
+}
+
+// ------------------------------------------------------------
+// Invite token
+// ------------------------------------------------------------
+model InviteToken {
+  id        String @id @default(cuid())
+  tenantId  String
+  email     String
+  role      TenantUserRole @default(user)
+
+  tokenHash String @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+
+  createdByUserId String
+
+  tenant    Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, email])
+  @@index([expiresAt])
 }

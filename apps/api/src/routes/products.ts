@@ -3,10 +3,11 @@ import {z} from "zod"
 import {prisma} from "../lib/prisma"
 import {type AuthedRequest, requireAuth} from "../middleware/auth"
 import { requireAnyRole } from "../middleware/rbac"
+import parsePagination from "../lib/pagination";
 
 export const productsRouter = Router()
 
-const productSelect = {
+const productSelect = ({
     id: true,
     sku: true,
     title: true,
@@ -14,7 +15,7 @@ const productSelect = {
     isActive: true,
     createdAt: true,
     updatedAt: true,
-} as const
+}) as const
 
 // GET /products?active=true|false
 productsRouter.get(
@@ -37,16 +38,28 @@ productsRouter.get(
         return res.status(400).json({ error: "Invalid query param: active must be true|false" })
     }
 
-    const products = await prisma.product.findMany({
-        where: {
-            tenantId,
-            ...(isActive === undefined ? {} : { isActive }),
-        },
-        orderBy: { createdAt: "desc" },
-        select: productSelect
-    })
+    const { skip, take, page, limit } = parsePagination(req)
 
-    return res.json({ products })
+    const [products, total] = await Promise.all([
+        prisma.product.findMany({
+            where: {
+                tenantId,
+                ...(isActive !== undefined ? { isActive } : {}),
+            },
+            orderBy: { createdAt: "desc" },
+            skip,
+            take,
+            select: productSelect,
+        }),
+        prisma.product.count({
+            where: {
+                tenantId,
+                ...(isActive !== undefined ? { isActive } : {}),
+            },
+        }),
+    ])
+
+    return res.json({ products, page, limit, total })
 })
 
 productsRouter.get(
