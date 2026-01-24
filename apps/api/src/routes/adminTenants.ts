@@ -6,16 +6,9 @@ import parsePagination from "../lib/pagination";
 import {z} from "zod";
 import {TenantUserRole} from "@prisma/client";
 import generateTokenPair from "../lib/tokenPair";
+import { HttpError } from "../lib/httpError"
 
 export const adminTenantsRouter = Router()
-
-class HttpError extends Error {
-    status: number
-    constructor(status: number, message: string) {
-        super(message)
-        this.status = status
-    }
-}
 
 const userSelect = (tenantId: string) =>
     ({

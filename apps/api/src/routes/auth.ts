@@ -11,29 +11,27 @@ import {
 } from "../lib/refreshToken"
 import { env } from "../lib/env"
 import generateTokenPair from "../lib/tokenPair"
+import { checkLoginRateLimit } from "../middleware/checkLoginRateLimit"
+import { registerLoginFailure, clearLoginFailures } from "../lib/loginRateLimit"
+import {getClientIp} from "../lib/clientIp";
+import { HttpError } from "../lib/httpError"
 
 export const authRouter = Router()
 
-class HttpError extends Error {
-    status: number
-    constructor(status: number, message: string) {
-        super(message)
-        this.status = status
-    }
-}
 
 const loginSchema = z.object({
     email: z.string().email(),
     password: z.string().min(1),
 })
 
-authRouter.post("/login", async (req, res) => {
+authRouter.post("/login", checkLoginRateLimit, async (req, res) => {
     const parsed = loginSchema.safeParse(req.body)
     if (!parsed.success) {
         return res.status(400).json({ error: "Invalid payload" })
     }
 
     const { email, password } = parsed.data
+    const ip = getClientIp(req)
 
     const user = await prisma.user.findUnique({
         where: { email },
@@ -51,13 +49,17 @@ authRouter.post("/login", async (req, res) => {
     })
 
     if (!user) {
+        await registerLoginFailure(email, ip)
         return res.status(401).json({ error: "Invalid credentials" })
     }
 
     const ok = await bcrypt.compare(password, user.passwordHash)
     if (!ok) {
+        await registerLoginFailure(email, ip)
         return res.status(401).json({ error: "Invalid credentials" })
     }
+
+    await clearLoginFailures(email, ip)
 
     if (!user.tenants.length) {
         return res.status(403).json({ error: "User has no tenant membership" })
@@ -187,9 +189,20 @@ authRouter.post("/refresh", async (req, res) => {
 
     try {
         const result = await prisma.$transaction(async (tx) => {
-            const claimed = await tx.refreshToken.updateMany({
+            const old = await tx.refreshToken.findFirst({
                 where: {
                     tokenHash,
+                    revokedAt: null,
+                    expiresAt: { gt: now },
+                },
+                select: { id: true, userId: true, tenantId: true },
+            })
+
+            if (!old) throw new HttpError(401, "Refresh token invalid or already used")
+
+            const claimed = await tx.refreshToken.updateMany({
+                where: {
+                    id: old.id,
                     revokedAt: null,
                     expiresAt: { gt: now },
                 },
@@ -200,12 +213,6 @@ authRouter.post("/refresh", async (req, res) => {
                 throw new HttpError(401, "Refresh token invalid or already used")
             }
 
-            const old = await tx.refreshToken.findUnique({
-                where: { tokenHash },
-            })
-
-            if (!old) throw new HttpError(401, "Refresh token not found")
-
             const membership = await tx.userTenant.findUnique({
                 where: {
                     userId_tenantId: {
@@ -213,15 +220,14 @@ authRouter.post("/refresh", async (req, res) => {
                         tenantId: old.tenantId,
                     },
                 },
+                select: { role: true },
             })
-
             if (!membership) throw new HttpError(401, "Membership not found")
 
             const user = await tx.user.findUnique({
                 where: { id: old.userId },
                 select: { globalRole: true },
             })
-
             if (!user) throw new HttpError(401, "User not found")
 
             const newRaw = generateRefreshToken()
@@ -232,14 +238,13 @@ authRouter.post("/refresh", async (req, res) => {
                     userId: old.userId,
                     tenantId: old.tenantId,
                     tokenHash: newHash,
-                    expiresAt: new Date(
-                        Date.now() + env.refreshDays * 24 * 60 * 60 * 1000
-                    ),
+                    expiresAt: new Date(Date.now() + env.refreshDays * 24 * 60 * 60 * 1000),
                 },
+                select: { id: true },
             })
 
             await tx.refreshToken.update({
-                where: { tokenHash },
+                where: { id: old.id },
                 data: { replacedByTokenId: newToken.id },
             })
 
@@ -256,9 +261,7 @@ authRouter.post("/refresh", async (req, res) => {
         res.cookie("refresh_token", result.newRaw, refreshCookieOptions())
         return res.json({ accessToken: result.accessToken })
     } catch (e: any) {
-        if (e instanceof HttpError) {
-            return res.status(e.status).json({ error: e.message })
-        }
+        if (e instanceof HttpError) return res.status(e.status).json({ error: e.message })
         throw e
     }
 })
@@ -344,6 +347,24 @@ authRouter.post("/accept-invite", async (req, res) => {
                     },
                 })
 
+                await tx.auditLog.create({
+                    data: {
+                        tenantId: invite.tenantId,
+                        userId: existingUser.id,
+                        action: "INVITE_ACCEPTED",
+                        requestId: (req as any).requestId ?? null,
+                        meta: {
+                            inviteId: invite.id,
+                            email: invite.email,
+                            role: invite.role,
+                            createdUser: false,
+                            route: req.originalUrl,
+                            method: req.method,
+                            ip: req.ip,
+                        },
+                    },
+                })
+
                 return { userId: existingUser.id, createdUser: false }
             }
 
@@ -366,6 +387,24 @@ authRouter.post("/accept-invite", async (req, res) => {
                     userId: user.id,
                     tenantId: invite.tenantId,
                     role: invite.role,
+                },
+            })
+
+            await tx.auditLog.create({
+                data: {
+                    tenantId: invite.tenantId,
+                    userId: user.id,
+                    action: "INVITE_ACCEPTED",
+                    requestId: (req as any).requestId ?? null,
+                    meta: {
+                        inviteId: invite.id,
+                        email: invite.email,
+                        role: invite.role,
+                        createdUser: true,
+                        route: req.originalUrl,
+                        method: req.method,
+                        ip: req.ip,
+                    },
                 },
             })
 

@@ -8,6 +8,7 @@ import { meRouter } from "./routes/me"
 import { productsRouter } from "./routes/products"
 import { ordersRouter } from "./routes/orders"
 import { adminTenantsRouter } from "./routes/adminTenants"
+import { usersRouter } from "./routes/users"
 import { env } from "./lib/env"
 import { notFound, errorHandler } from "./middleware/error"
 
@@ -28,6 +29,8 @@ export function createApp() {
     app.use("/products", productsRouter)
     app.use("/orders", ordersRouter)
     app.use("/admin/tenants", adminTenantsRouter)
+    app.use("/user", usersRouter)
+
 
     app.use(notFound)
     app.use(errorHandler)

@@ -16,9 +16,11 @@ export function hashRefreshToken(raw: string): string {
 
 export function refreshCookieOptions() {
     const maxAgeMs = env.refreshDays * 24 * 60 * 60 * 1000
+    const isProd = process.env.NODE_ENV === "production"
+
     return {
         httpOnly: true,
-        secure: false, // set true on HTTPS in prod
+        secure: isProd,
         sameSite: "lax" as const,
         path: "/auth/refresh",
         maxAge: maxAgeMs,

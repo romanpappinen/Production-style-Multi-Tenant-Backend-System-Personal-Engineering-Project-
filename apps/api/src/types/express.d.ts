@@ -9,7 +9,8 @@ declare global {
                 tid: string
                 role: "admin" | "manager" | "user"
                 gr: "none" | "superadmin"
-            }
+            },
+            ip?: string
         }
     }
 }

@@ -6,16 +6,9 @@ import {requireAnyRole} from "../middleware/rbac"
 import parsePagination from "../lib/pagination";
 import { TenantUserRole } from "@prisma/client"
 import generateTokenPair from "../lib/tokenPair";
+import { HttpError } from "../lib/httpError"
 
 export const usersRouter = Router()
-
-class HttpError extends Error {
-    status: number
-    constructor(status: number, message: string) {
-        super(message)
-        this.status = status
-    }
-}
 
 const roleSchema = z.nativeEnum(TenantUserRole)
 

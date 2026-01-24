@@ -41,6 +41,11 @@ enum GlobalRole {
   superadmin
 }
 
+enum OrderStatus {
+  created
+  cancelled
+}
+
 // ------------------------------------------------------------
 // Core: multi-tenant
 // ------------------------------------------------------------
@@ -62,19 +67,20 @@ model Tenant {
 }
 
 model User {
-  id            String   @id @default(cuid())
-  email         String   @unique
-  passwordHash  String
-  name          String?
+  id           String     @id @default(cuid())
+  email        String     @unique @db.Citext
+  passwordHash String
+  name         String?
   globalRole   GlobalRole @default(none)
-  createdAt     DateTime @default(now())
-  createdOrders Order[]  @relation("OrderCreatedBy")
-  updatedAt     DateTime @updatedAt
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
 
-  tenants   UserTenant[]
-  tokens    RefreshToken[]
-  loginToken LoginToken[]
-  auditLogs AuditLog[]
+  createdOrders Order[]        @relation("OrderCreatedBy")
+  tenants       UserTenant[]
+  tokens        RefreshToken[]
+  loginToken    LoginToken[]
+  auditLogs     AuditLog[]
+  inviteTokens  InviteToken[]
 
   @@index([createdAt])
 }
@@ -95,7 +101,7 @@ model UserTenant {
 }
 
 // ------------------------------------------------------------
-// Auth: refresh tokens (rotation-ready)
+// Auth: refresh token (rotation-ready)
 // ------------------------------------------------------------
 
 model RefreshToken {
@@ -108,8 +114,11 @@ model RefreshToken {
   createdAt DateTime @default(now())
   expiresAt DateTime
 
-  revokedAt         DateTime?
-  replacedByTokenId String?
+  revokedAt DateTime?
+
+  replacedByTokenId String?       @unique
+  replacedByToken   RefreshToken? @relation("RefreshTokenRotation", fields: [replacedByTokenId], references: [id], onDelete: SetNull)
+  replacesToken     RefreshToken? @relation("RefreshTokenRotation")
 
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -148,8 +157,8 @@ model Order {
   tenantId        String
   createdByUserId String
 
-  status     String @default("created") // later: enum if you want
-  totalCents Int    @default(0)
+  status     OrderStatus @default(created)
+  totalCents Int         @default(0)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -184,12 +193,12 @@ model OrderItem {
 // ------------------------------------------------------------
 
 model AuditLog {
-  id       String      @id @default(cuid())
-  tenantId String
-  userId   String?
-  action   AuditAction
+  id        String      @id @default(cuid())
+  tenantId  String
+  userId    String?
+  action    AuditAction
   // free-form JSON string keeps it simple; can be Json type if you prefer
-  meta     Json?
+  meta      Json?
   requestId String?
 
   createdAt DateTime @default(now())
@@ -207,19 +216,21 @@ model AuditLog {
 // Invite token
 // ------------------------------------------------------------
 model InviteToken {
-  id        String @id @default(cuid())
-  tenantId  String
-  email     String
-  role      TenantUserRole @default(user)
+  id       String         @id @default(cuid())
+  tenantId String
+  email    String
+  role     TenantUserRole @default(user)
 
-  tokenHash String @unique
+  tokenHash String    @unique
   expiresAt DateTime
   usedAt    DateTime?
 
   createdByUserId String
+  createdByUser   User   @relation(fields: [createdByUserId], references: [id], onDelete: Restrict)
 
-  tenant    Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
+  @@index([createdByUserId])
   @@index([tenantId, email])
   @@index([expiresAt])
 }
@@ -229,9 +240,9 @@ model InviteToken {
 // ------------------------------------------------------------
 
 model LoginToken {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   userId    String
-  tokenHash String   @unique
+  tokenHash String    @unique
   expiresAt DateTime
   usedAt    DateTime?
 
@@ -239,6 +250,7 @@ model LoginToken {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([usedAt, expiresAt])
   @@index([userId])
   @@index([expiresAt])
 }
@@ -248,16 +260,16 @@ model LoginToken {
 // ------------------------------------------------------------
 
 model LoginAttempt {
-  id            String   @id @default(cuid())
-  email         String
-  ip            String
+  id    String @id @default(cuid())
+  email String @db.Citext
+  ip    String
 
-  count         Int
-  blockedUntil  DateTime?
-  lastFailAt    DateTime?
+  count        Int
+  blockedUntil DateTime?
+  lastFailAt   DateTime?
 
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@unique([email, ip])
   @@index([blockedUntil])

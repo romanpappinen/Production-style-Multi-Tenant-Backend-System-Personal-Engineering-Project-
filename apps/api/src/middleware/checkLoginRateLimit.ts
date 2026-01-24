@@ -1,16 +1,13 @@
 import { Request, Response, NextFunction } from "express"
 import { assertLoginAllowed, TooManyLoginAttemptsError } from "../lib/loginRateLimit"
+import {getClientIp} from "../lib/clientIp";
 
-export async function checkLoginRateLimit(
-    req: Request,
-    res: Response,
-    next: NextFunction
-) {
+export async function checkLoginRateLimit(req: Request, res: Response, next: NextFunction) {
     const email = req.body?.email
-    const ip = req.ip
+    const ip = getClientIp(req)
 
-    if (!email || !ip) {
-        return res.status(400).json({ error: "Missing email or IP" })
+    if (!email) {
+        return res.status(400).json({ error: "Missing email" })
     }
 
     try {
@@ -23,7 +20,6 @@ export async function checkLoginRateLimit(
                 blockedUntil: e.blockedUntil,
             })
         }
-
         throw e
     }
 }

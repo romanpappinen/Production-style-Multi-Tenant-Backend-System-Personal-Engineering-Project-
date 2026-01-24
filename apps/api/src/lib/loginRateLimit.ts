@@ -1,4 +1,3 @@
-// lib/loginRateLimit.ts
 import { prisma } from "./prisma"
 
 export class TooManyLoginAttemptsError extends Error {
