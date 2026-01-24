@@ -1,0 +1,265 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ------------------------------------------------------------
+// Enums
+// ------------------------------------------------------------
+
+enum TenantUserRole {
+  admin
+  manager
+  user
+}
+
+enum AuditAction {
+  INVITE_CREATED
+  INVITE_ACCEPTED
+
+  USER_REGISTERED
+  USER_LOGGED_IN
+  USER_LOGGED_OUT
+  TOKEN_REFRESHED
+
+  PRODUCT_CREATED
+  PRODUCT_UPDATED
+  PRODUCT_DELETED
+
+  ORDER_CREATED
+  ORDER_CANCELLED
+
+  TENANT_USER_ROLE_UPDATED
+  TENANT_USER_REMOVED
+}
+
+enum GlobalRole {
+  none
+  superadmin
+}
+
+// ------------------------------------------------------------
+// Core: multi-tenant
+// ------------------------------------------------------------
+
+model Tenant {
+  id            String         @id @default(cuid())
+  name          String
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  refreshTokens RefreshToken[]
+
+  users     UserTenant[]
+  products  Product[]
+  orders    Order[]
+  auditLogs AuditLog[]
+  invites   InviteToken[]
+
+  @@index([createdAt])
+}
+
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  passwordHash  String
+  name          String?
+  globalRole   GlobalRole @default(none)
+  createdAt     DateTime @default(now())
+  createdOrders Order[]  @relation("OrderCreatedBy")
+  updatedAt     DateTime @updatedAt
+
+  tenants   UserTenant[]
+  tokens    RefreshToken[]
+  loginToken LoginToken[]
+  auditLogs AuditLog[]
+
+  @@index([createdAt])
+}
+
+model UserTenant {
+  id        String         @id @default(cuid())
+  userId    String
+  tenantId  String
+  role      TenantUserRole @default(user)
+  createdAt DateTime       @default(now())
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, tenantId])
+  @@index([tenantId, role])
+  @@index([userId])
+}
+
+// ------------------------------------------------------------
+// Auth: refresh tokens (rotation-ready)
+// ------------------------------------------------------------
+
+model RefreshToken {
+  id       String @id @default(cuid())
+  userId   String
+  tenantId String
+
+  // Store ONLY hash (like passwords), never the raw token
+  tokenHash String
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+
+  revokedAt         DateTime?
+  replacedByTokenId String?
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tokenHash])
+  @@index([userId, tenantId])
+  @@index([expiresAt])
+  @@index([revokedAt])
+}
+
+// ------------------------------------------------------------
+// Domain: products & orders
+// ------------------------------------------------------------
+
+model Product {
+  id         String  @id @default(cuid())
+  tenantId   String
+  sku        String
+  title      String
+  priceCents Int
+  isActive   Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant     Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  orderItems OrderItem[]
+
+  @@unique([tenantId, sku])
+  @@index([tenantId, isActive])
+  @@index([createdAt])
+}
+
+model Order {
+  id              String @id @default(cuid())
+  tenantId        String
+  createdByUserId String
+
+  status     String @default("created") // later: enum if you want
+  totalCents Int    @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant    Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy User   @relation("OrderCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+
+  items OrderItem[]
+
+  @@index([tenantId, createdAt])
+  @@index([createdByUserId, createdAt])
+}
+
+model OrderItem {
+  id        String @id @default(cuid())
+  orderId   String
+  productId String
+
+  quantity       Int
+  unitPriceCents Int
+  lineTotalCents Int
+
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([orderId])
+  @@index([productId])
+}
+
+// ------------------------------------------------------------
+// Audit log
+// ------------------------------------------------------------
+
+model AuditLog {
+  id       String      @id @default(cuid())
+  tenantId String
+  userId   String?
+  action   AuditAction
+  // free-form JSON string keeps it simple; can be Json type if you prefer
+  meta     Json?
+  requestId String?
+
+  createdAt DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User?  @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, createdAt])
+  @@index([userId, createdAt])
+  @@index([action, createdAt])
+  @@index([requestId])
+}
+
+// ------------------------------------------------------------
+// Invite token
+// ------------------------------------------------------------
+model InviteToken {
+  id        String @id @default(cuid())
+  tenantId  String
+  email     String
+  role      TenantUserRole @default(user)
+
+  tokenHash String @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+
+  createdByUserId String
+
+  tenant    Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, email])
+  @@index([expiresAt])
+}
+
+// ------------------------------------------------------------
+// Login token
+// ------------------------------------------------------------
+
+model LoginToken {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// ------------------------------------------------------------
+// Login attempts
+// ------------------------------------------------------------
+
+model LoginAttempt {
+  id            String   @id @default(cuid())
+  email         String
+  ip            String
+
+  count         Int
+  blockedUntil  DateTime?
+  lastFailAt    DateTime?
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([email, ip])
+  @@index([blockedUntil])
+  @@index([lastFailAt])
+}
